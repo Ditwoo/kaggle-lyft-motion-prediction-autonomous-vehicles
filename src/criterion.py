@@ -7,6 +7,7 @@ def neg_multi_log_likelihood_batch(
     predictions: torch.Tensor,
     confidences: torch.Tensor,
     avails: torch.Tensor,
+    reduction: str = "mean",
 ) -> torch.Tensor:
     """Compute a negative log-likelihood for the multi-modal scenario.
     log-sum-exp trick is used here to avoid underflow and overflow.
@@ -27,6 +28,11 @@ def neg_multi_log_likelihood_batch(
     Source:
         https://www.kaggle.com/huanvo/lyft-complete-train-and-prediction-pipeline
     """
+    if reduction not in ("mean", "none", "sum"):
+        raise ValueError(
+            f"Expected reduction one of 'mean', 'none', 'sum' but got - '{reduction}'"
+        )
+
     if len(predictions.shape) != 4:
         raise ValueError(f"expected 3D (MxTxC) array for pred, got {predictions.shape}")
 
@@ -83,4 +89,8 @@ def neg_multi_log_likelihood_batch(
         - max_value
     )  # reduce trajectories
 
-    return torch.mean(error)
+    if reduction == "mean":
+        return torch.mean(error)
+    elif reduction == "sum":
+        return torch.sum(error)
+    return error
