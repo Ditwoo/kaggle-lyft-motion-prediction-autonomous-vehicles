@@ -91,12 +91,11 @@ def get_loaders(train_batch_size=32, valid_batch_size=64):
     train_dataset = AgentDataset(cfg, train_zarr, rasterizer)
 
     sizes = ps.read_csv(os.environ["TRAIN_TRAJ_SIZES"])["size"].values
-    size_threshold = 6
-    n_points = (sizes[sizes < size_threshold]).shape[0]
+    is_small = sizes < 6
+    n_points = is_small.sum()
     to_sample = n_points // 4
     print(" * points - {} (points to sample - {})".format(n_points, to_sample))
     print(" * paths  -", sizes.shape[0] - n_points)
-    is_small = sizes < size_threshold
     indices = np.concatenate(
         [
             np.random.choice(np.where(is_small)[0], size=to_sample, replace=False,),
