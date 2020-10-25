@@ -2,6 +2,8 @@ import os
 import time
 import shutil
 from pathlib import Path
+import numpy as np
+import pandas as ps
 
 import torch
 import torch.nn as nn
@@ -87,9 +89,26 @@ def get_loaders(train_batch_size=32, valid_batch_size=64):
 
     train_zarr = ChunkedDataset(dm.require("scenes/train.zarr")).open()
     train_dataset = AgentDataset(cfg, train_zarr, rasterizer)
-    n_samples = len(train_dataset) // 4
+
+    sizes = ps.read_csv(os.environ["TRAIN_TRAJ_SIZES"])["size"].values
+    size_threshold = 6
+    n_points = (sizes[sizes < size_threshold]).shape[0]
+    to_sample = n_points // 4
+    print(" * points - {} (points to sample - {})".format(n_points, to_sample))
+    print(" * paths  -", sizes.shape[0] - n_points)
+    indices = np.concatenate(
+        [
+            np.random.choice(
+                np.where(sizes[sizes < size_threshold])[0],
+                size=to_sample,
+                replace=False,
+            ),
+            np.where(sizes[sizes >= size_threshold])[0],
+        ]
+    )
+
     # TODO: shuffle subset
-    train_dataset = Subset(train_dataset, list(range(n_samples * 2, n_samples * 3)))
+    train_dataset = Subset(train_dataset, indices)
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_batch_size,
