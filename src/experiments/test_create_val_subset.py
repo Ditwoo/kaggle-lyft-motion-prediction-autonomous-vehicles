@@ -44,7 +44,7 @@ def main():
     dm = LocalDataManager(None)
     rasterizer = build_rasterizer(cfg, dm)
 
-    num_frames_to_chop = 100
+    num_frames_to_chop = 10
     eval_base_path = create_chopped_dataset(
         dm.require("scenes/validate.zarr"),
         cfg["raster_params"]["filter_agents_threshold"],
