@@ -96,14 +96,11 @@ def get_loaders(train_batch_size=32, valid_batch_size=64):
     to_sample = n_points // 4
     print(" * points - {} (points to sample - {})".format(n_points, to_sample))
     print(" * paths  -", sizes.shape[0] - n_points)
+    is_small = sizes < size_threshold
     indices = np.concatenate(
         [
-            np.random.choice(
-                np.where(sizes[sizes < size_threshold])[0],
-                size=to_sample,
-                replace=False,
-            ),
-            np.where(sizes[sizes >= size_threshold])[0],
+            np.random.choice(np.where(is_small)[0], size=to_sample, replace=False,),
+            np.where(~is_small)[0],
         ]
     )
 
