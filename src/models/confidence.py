@@ -10,7 +10,7 @@ class ModelWithConfidence(nn.Module):
         self.num_trajectories = num_trajectories
         self.num_preds = 2 * future_num_frames * num_trajectories
 
-    def forward(self, batch):
+    def forward(self, *batch):
         """
         Args:
             batch (torch.Tensor): input data,
@@ -21,7 +21,7 @@ class ModelWithConfidence(nn.Module):
             and
             confidences with shape - (batch size)x(trajectories)
         """
-        x = self.backbone(batch)
+        x = self.backbone(*batch)
 
         bs, _ = x.shape
         preds, conf = torch.split(x, self.num_preds, dim=1)
