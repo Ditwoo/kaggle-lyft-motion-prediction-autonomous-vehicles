@@ -1,10 +1,13 @@
 import os
 from datetime import datetime
 import torch
+import numpy as np
 from l5kit.data import LocalDataManager, ChunkedDataset
 from l5kit.dataset import AgentDataset, EgoDataset
 from l5kit.rasterization import build_rasterizer
 from torch.utils.data import Dataset
+from l5kit.geometry import transform_points
+from l5kit.visualization.utils import draw_trajectory
 
 
 class MotionDataset(Dataset):
@@ -177,4 +180,18 @@ class CubicAgentDataset(AgentDataset):
         sample["time_hour"] = torch.tensor(hour).long()
         sample["time_weekday"] = torch.tensor(weekday).long()
         sample["time_month"] = torch.tensor(month).long()
+        return sample
+
+
+class SegmentationAgentDataset(AgentDataset):
+    def __getitem__(self, index):
+        sample = super().__getitem__(index)
+        mask = np.zeros(sample["image"].shape[1:], dtype=np.uint8)
+        points = transform_points(
+            sample["target_positions"], sample["raster_from_agent"]
+        )
+        points = points[sample["target_availabilities"].astype(bool)]
+        draw_trajectory(mask, points, (255))
+        mask = torch.from_numpy((mask / 255.0).astype(np.float32)).unsqueeze(0)
+        sample["mask"] = mask
         return sample

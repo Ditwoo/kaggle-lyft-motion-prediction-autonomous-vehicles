@@ -1,1 +1,1 @@
-from .confidence import ModelWithConfidence
+from .confidence import ModelWithConfidence, SegmentationModelWithConfidence
