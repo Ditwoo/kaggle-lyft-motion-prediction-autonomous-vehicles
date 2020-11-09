@@ -26,6 +26,12 @@ def resnet18(pretrained=False, in_channels=3, num_classes=1000, progress=True):
     return model
 
 
+def resnet34(pretrained=False, in_channels=3, num_classes=1000, progress=True):
+    model = models.resnet34(pretrained=pretrained, progress=progress)
+    model = _adjust_model(model, in_channels, num_classes)
+    return model
+
+
 def resnet50(pretrained=False, in_channels=3, num_classes=1000, progress=True):
     model = models.resnet50(pretrained=pretrained, progress=progress)
     model = _adjust_model(model, in_channels, num_classes)
@@ -98,7 +104,7 @@ class CubicResNet(ResNet):
         x4 = self.layer4(x3)
 
         # conv features
-        x = self.avgpool(x)
+        x = self.avgpool(x4)
         x = torch.flatten(x, 1)
         # categorical features
         c = self.category(c)
@@ -150,7 +156,7 @@ class MultiCategoryResNet(ResNet):
         x4 = self.layer4(x3)
 
         # conv features
-        x = self.avgpool(x)
+        x = self.avgpool(x4)
         x = torch.flatten(x, 1)
         # categorical features
         c = self.category(*cats)
