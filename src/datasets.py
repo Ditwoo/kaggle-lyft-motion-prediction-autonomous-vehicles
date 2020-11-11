@@ -194,4 +194,5 @@ class SegmentationAgentDataset(AgentDataset):
         draw_trajectory(mask, points, (255))
         mask = torch.from_numpy((mask / 255.0).astype(np.float32)).unsqueeze(0)
         sample["mask"] = mask
+        sample["square_category"] = torch.tensor(to_flatten_square_idx(sample)).long()
         return sample
