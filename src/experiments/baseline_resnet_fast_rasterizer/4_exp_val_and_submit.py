@@ -27,7 +27,7 @@ from pathlib import Path
 from src.batteries import t2d, load_checkpoint
 from src.batteries.progress import tqdm
 from src.models.genet import genet_normal
-from src.models.resnets import resnet18
+from src.models.resnets import resnet18, resnet34
 from src.models import ModelWithConfidence
 from src.criterion import neg_multi_log_likelihood_batch
 
@@ -39,15 +39,15 @@ DATA_DIR = './data'
 DEBUG = int(os.environ.get("DEBUG", -1))
 NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "16"))
 
-exp_basename = "test_resnet18_fast_rasterizer_confidence"
-checkpoint_path = f"./logs/{exp_basename}/stage_0/exp_1.pth"
-val_predictions_file = f"val_predictions/preds_validate_chopped_100_{exp_basename}_first_ep.csv"
+exp_basename = "resnet34_fast_rasterizer_20data_confidence_25hist"
+checkpoint_path = f"./logs/{exp_basename}/stage_0/best.pth"
+val_predictions_file = f"val_predictions/preds_validate_chopped_100_{exp_basename}.csv"
 submission_file = f"submissions/{exp_basename}.csv"
 
 cfg = {
     "format_version": 4,
     "model_params": {
-        "history_num_frames": 10,
+        "history_num_frames": 25,
         "history_step_size": 1,
         "history_delta_time": 0.1,
         "future_num_frames": 50,
@@ -76,7 +76,7 @@ cfg = {
 future_n_frames = cfg["model_params"]["future_num_frames"]
 n_trajectories = 3
 model = ModelWithConfidence(
-    backbone=resnet18(
+    backbone=resnet34(
         pretrained=True,
         in_channels=6,
         num_classes=2 * future_n_frames * n_trajectories + n_trajectories,
