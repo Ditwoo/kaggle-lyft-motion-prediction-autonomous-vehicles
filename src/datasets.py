@@ -1,13 +1,15 @@
 import os
 from datetime import datetime
-import torch
+
+import cv2
 import numpy as np
-from l5kit.data import LocalDataManager, ChunkedDataset
+import torch
+from l5kit.data import ChunkedDataset, LocalDataManager
 from l5kit.dataset import AgentDataset, EgoDataset
-from l5kit.rasterization import build_rasterizer
-from torch.utils.data import Dataset
 from l5kit.geometry import transform_points
+from l5kit.rasterization import build_rasterizer
 from l5kit.visualization.utils import draw_trajectory
+from torch.utils.data import Dataset
 
 
 class MotionDataset(Dataset):
@@ -195,4 +197,88 @@ class SegmentationAgentDataset(AgentDataset):
         mask = torch.from_numpy((mask / 255.0).astype(np.float32)).unsqueeze(0)
         sample["mask"] = mask
         sample["square_category"] = torch.tensor(to_flatten_square_idx(sample)).long()
+        return sample
+
+
+def get_num_channels(image):
+    return image.shape[2] if len(image.shape) == 3 else 1
+
+
+def _maybe_process_in_chunks(process_fn, **kwargs):
+    """
+    Wrap OpenCV function to enable processing images with more than 4 channels.
+    Limitations:
+        This wrapper requires image to be the first argument and rest must be sent via named arguments.
+
+    Args:
+        process_fn: Transform function (e.g cv2.resize).
+        kwargs: Additional parameters.
+
+    Returns:
+        numpy.ndarray: Transformed image.
+    """
+
+    def __process_fn(img):
+        num_channels = get_num_channels(img)
+        if num_channels > 4:
+            chunks = []
+            for index in range(0, num_channels, 4):
+                if num_channels - index == 2:
+                    # Many OpenCV functions cannot work with 2-channel images
+                    for i in range(2):
+                        chunk = img[:, :, index + i : index + i + 1]
+                        chunk = process_fn(chunk, **kwargs)
+                        chunk = np.expand_dims(chunk, -1)
+                        chunks.append(chunk)
+                else:
+                    chunk = img[:, :, index : index + 4]
+                    chunk = process_fn(chunk, **kwargs)
+                    chunks.append(chunk)
+            img = np.dstack(chunks)
+        else:
+            img = process_fn(img, **kwargs)
+        return img
+
+    return __process_fn
+
+
+def rotate(
+    img,
+    angle,
+    interpolation=cv2.INTER_LINEAR,
+    border_mode=cv2.BORDER_REFLECT_101,
+    value=None,
+):
+    height, width = img.shape[:2]
+    matrix = cv2.getRotationMatrix2D((width / 2, height / 2), angle, 1.0)
+
+    warp_fn = _maybe_process_in_chunks(
+        cv2.warpAffine,
+        M=matrix,
+        dsize=(width, height),
+        flags=interpolation,
+        borderMode=border_mode,
+        borderValue=value,
+    )
+    return warp_fn(img)
+
+
+class RotationAgentDataset(AgentDataset):
+    rotation_angles = (-15, 15)
+    rotation_probability = 0.3
+
+    def __getitem__(self, index):
+        sample = super().__getitem__(index)
+
+        if np.random.uniform() <= self.rotation_probability:
+            angle = np.random.randint(*self.rotation_angles)
+            theta = np.radians(angle)
+            c = np.cos(theta)
+            s = np.sin(theta)
+            rot_matrix = np.array([[c, s], [-s, c]])
+
+            image = np.moveaxis(sample["image"], 0, -1)  # CxHxW -> HxWxC
+            sample["image"] = np.moveaxis(rotate(image, angle), -1, 0)  # HxWxC -> CxHxW
+            sample["target_positions"] = sample["target_positions"].dot(rot_matrix)
+
         return sample
