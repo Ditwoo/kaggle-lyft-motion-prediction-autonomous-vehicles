@@ -249,6 +249,18 @@ def rotate(
     border_mode=cv2.BORDER_REFLECT_101,
     value=None,
 ):
+    """
+
+    Args:
+        img (np.ndarray): image with shapes HxWxC
+        angle (float): angle to rotate (radians)
+        interpolation ([type], optional): interpolation type. Defaults to cv2.INTER_LINEAR.
+        border_mode ([type], optional): border mode type. Defaults to cv2.BORDER_REFLECT_101.
+        value ([type], optional): border mode value. Defaults to None.
+
+    Returns:
+        modified image (np.ndarray with shapes HxWxC)
+    """
     height, width = img.shape[:2]
     matrix = cv2.getRotationMatrix2D((width / 2, height / 2), angle, 1.0)
 
@@ -280,5 +292,55 @@ class RotationAgentDataset(AgentDataset):
             image = np.moveaxis(sample["image"], 0, -1)  # CxHxW -> HxWxC
             sample["image"] = np.moveaxis(rotate(image, angle), -1, 0)  # HxWxC -> CxHxW
             sample["target_positions"] = sample["target_positions"].dot(rot_matrix)
+
+        return sample
+
+
+def dropout(image, n_squares=8, square_size=0.2):
+    """
+
+    Args:
+        image (np.ndarray): image with shapes CxHxW
+        n_squares (int): number of dropout squares. Defaults to 8.
+        square_size (float, optional): sizes of dropout squares. Defaults to 0.2.
+
+    Returns:
+        modified image (np.ndarray with shapes CxHxW)
+    """
+    if n_squares == 0 or square_size == 0.0:
+        return image
+
+    c, w, h = image.shape
+    square_w = int(square_size * w)
+    square_h = int(square_size * h)
+
+    for _ in range(n_squares):
+        # centers of squares
+        x = np.random.randint(0, high=w)
+        y = np.random.randint(0, high=h)
+
+        xa = max(0, x - square_w // 2)
+        xb = min(w, x + square_w // 2)
+
+        ya = max(0, y - square_h // 2)
+        yb = min(h, y + square_h // 2)
+
+        image[:, xa:xb, ya:yb] = 0.0
+
+    return image
+
+
+class DropoutAgentDataset(AgentDataset):
+    drop_n_squares = 8
+    drop_square_size = 0.15
+    drop_probability = 0.3
+
+    def __getitem__(self, index):
+        sample = super().__getitem__(index)
+
+        if np.random.uniform() <= self.drop_probability:
+            sample["image"] = dropout(
+                sample["image"], self.drop_n_squares, self.drop_square_size
+            )
 
         return sample
