@@ -1,18 +1,23 @@
 import os
 from datetime import datetime
-import torch
+
+import cv2
 import numpy as np
-from l5kit.data import LocalDataManager, ChunkedDataset
+import torch
+from l5kit.data import ChunkedDataset, LocalDataManager
 from l5kit.dataset import AgentDataset, EgoDataset
-from l5kit.rasterization import build_rasterizer
-from torch.utils.data import Dataset
 from l5kit.geometry import transform_points
+from l5kit.rasterization import build_rasterizer
 from l5kit.visualization.utils import draw_trajectory
+from torch.utils.data import Dataset
 
 
 class MotionDataset(Dataset):
     def __init__(
-        self, cfg, loader_key="train_data_loader", fn_rasterizer=build_rasterizer,
+        self,
+        cfg,
+        loader_key="train_data_loader",
+        fn_rasterizer=build_rasterizer,
     ):
         self.cfg = cfg
         self.loader_key = loader_key
@@ -170,8 +175,6 @@ def parse_timestamp(timestamp):
     return d.hour, d.weekday(), d.month - 1
 
 
-    
-
 class CubicAgentDataset(AgentDataset):
     def __getitem__(self, index):
         sample = super().__getitem__(index)
@@ -183,7 +186,6 @@ class CubicAgentDataset(AgentDataset):
         sample["time_weekday"] = torch.tensor(weekday).long()
         sample["time_month"] = torch.tensor(month).long()
         return sample
-
 
 
 class SegmentationAgentDataset(AgentDataset):
@@ -200,16 +202,166 @@ class SegmentationAgentDataset(AgentDataset):
         sample["square_category"] = torch.tensor(to_flatten_square_idx(sample)).long()
         return sample
 
-def acceleration_approx(smaple: np.ndarray, h: float = 1.0, mean: float = 0.00279, std: float = 1.40201):
+
+def acceleration_approx(
+    smaple: np.ndarray, h: float = 1.0, mean: float = 0.00279, std: float = 1.40201
+):
     x = smaple[:, 0]
     y = smaple[:, 1]
     x_acc = (((x[:-2] - 2 * x[1:-1] + x[2:]) / h ** 2) - mean) / std
     y_acc = (((y[:-2] - 2 * y[1:-1] + y[2:]) / h ** 2) - mean) / std
-    
+
     return np.concatenate([x_acc, y_acc])
+
 
 class AccelAgentDataset(AgentDataset):
     def __getitem__(self, index):
         sample = super().__getitem__(index)
-        sample['xy_acceleration'] = acceleration_approx(sample['history_positions'])
+        sample["xy_acceleration"] = acceleration_approx(sample["history_positions"])
+        return sample
+
+
+def get_num_channels(image):
+    return image.shape[2] if len(image.shape) == 3 else 1
+
+
+def _maybe_process_in_chunks(process_fn, **kwargs):
+    """
+    Wrap OpenCV function to enable processing images with more than 4 channels.
+    Limitations:
+        This wrapper requires image to be the first argument and rest must be sent via named arguments.
+
+    Args:
+        process_fn: Transform function (e.g cv2.resize).
+        kwargs: Additional parameters.
+
+    Returns:
+        numpy.ndarray: Transformed image.
+    """
+
+    def __process_fn(img):
+        num_channels = get_num_channels(img)
+        if num_channels > 4:
+            chunks = []
+            for index in range(0, num_channels, 4):
+                if num_channels - index == 2:
+                    # Many OpenCV functions cannot work with 2-channel images
+                    for i in range(2):
+                        chunk = img[:, :, index + i : index + i + 1]
+                        chunk = process_fn(chunk, **kwargs)
+                        chunk = np.expand_dims(chunk, -1)
+                        chunks.append(chunk)
+                else:
+                    chunk = img[:, :, index : index + 4]
+                    chunk = process_fn(chunk, **kwargs)
+                    chunks.append(chunk)
+            img = np.dstack(chunks)
+        else:
+            img = process_fn(img, **kwargs)
+        return img
+
+    return __process_fn
+
+
+def rotate(
+    img,
+    angle,
+    interpolation=cv2.INTER_LINEAR,
+    border_mode=cv2.BORDER_REFLECT_101,
+    value=None,
+):
+    """
+
+    Args:
+        img (np.ndarray): image with shapes HxWxC
+        angle (float): angle to rotate (radians)
+        interpolation ([type], optional): interpolation type. Defaults to cv2.INTER_LINEAR.
+        border_mode ([type], optional): border mode type. Defaults to cv2.BORDER_REFLECT_101.
+        value ([type], optional): border mode value. Defaults to None.
+
+    Returns:
+        modified image (np.ndarray with shapes HxWxC)
+    """
+    height, width = img.shape[:2]
+    matrix = cv2.getRotationMatrix2D((width / 2, height / 2), angle, 1.0)
+
+    warp_fn = _maybe_process_in_chunks(
+        cv2.warpAffine,
+        M=matrix,
+        dsize=(width, height),
+        flags=interpolation,
+        borderMode=border_mode,
+        borderValue=value,
+    )
+    return warp_fn(img)
+
+
+class RotationAgentDataset(AgentDataset):
+    rotation_angles = (-15, 15)
+    rotation_probability = 0.3
+
+    def __getitem__(self, index):
+        sample = super().__getitem__(index)
+
+        if np.random.uniform() <= self.rotation_probability:
+            angle = np.random.randint(*self.rotation_angles)
+            theta = np.radians(angle)
+            c = np.cos(theta)
+            s = np.sin(theta)
+            rot_matrix = np.array([[c, s], [-s, c]])
+
+            image = np.moveaxis(sample["image"], 0, -1)  # CxHxW -> HxWxC
+            sample["image"] = np.moveaxis(rotate(image, angle), -1, 0)  # HxWxC -> CxHxW
+            sample["target_positions"] = sample["target_positions"].dot(rot_matrix)
+
+        return sample
+
+
+def dropout(image, n_squares=8, square_size=0.2):
+    """
+
+    Args:
+        image (np.ndarray): image with shapes CxHxW
+        n_squares (int): number of dropout squares. Defaults to 8.
+        square_size (float, optional): sizes of dropout squares. Defaults to 0.2.
+
+    Returns:
+        modified image (np.ndarray with shapes CxHxW)
+    """
+    if n_squares == 0 or square_size == 0.0:
+        return image
+
+    c, w, h = image.shape
+    square_w = int(square_size * w)
+    square_h = int(square_size * h)
+
+    for _ in range(n_squares):
+        # centers of squares
+        x = np.random.randint(0, high=w)
+        y = np.random.randint(0, high=h)
+
+        xa = max(0, x - square_w // 2)
+        xb = min(w, x + square_w // 2)
+
+        ya = max(0, y - square_h // 2)
+        yb = min(h, y + square_h // 2)
+
+        image[:, xa:xb, ya:yb] = 0.0
+
+    return image
+
+
+class DropoutAgentDataset(AgentDataset):
+    drop_n_squares = 8
+    drop_square_size = 0.15
+    drop_probability = 0.3
+
+    def __getitem__(self, index):
+        sample = super().__getitem__(index)
+
+        if np.random.uniform() <= self.drop_probability:
+            sample["image"] = dropout(
+                sample["image"], self.drop_n_squares, self.drop_square_size
+            )
+
         return sample
