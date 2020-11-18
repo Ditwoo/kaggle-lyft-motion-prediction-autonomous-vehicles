@@ -186,7 +186,6 @@ def train_fn(
             progress.set_postfix_str(f"loss - {_loss:.5f}")
             progress.update(1)
 
-            
             if (idx + 1) in indices_to_save and logdir is not None:
                 checkpoint = make_checkpoint("train", idx + 1, model)
                 save_checkpoint(checkpoint, logdir, f"train_{idx}.pth")

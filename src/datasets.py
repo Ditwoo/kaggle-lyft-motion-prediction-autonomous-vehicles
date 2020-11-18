@@ -170,6 +170,8 @@ def parse_timestamp(timestamp):
     return d.hour, d.weekday(), d.month - 1
 
 
+    
+
 class CubicAgentDataset(AgentDataset):
     def __getitem__(self, index):
         sample = super().__getitem__(index)
@@ -181,6 +183,7 @@ class CubicAgentDataset(AgentDataset):
         sample["time_weekday"] = torch.tensor(weekday).long()
         sample["time_month"] = torch.tensor(month).long()
         return sample
+
 
 
 class SegmentationAgentDataset(AgentDataset):
@@ -195,4 +198,18 @@ class SegmentationAgentDataset(AgentDataset):
         mask = torch.from_numpy((mask / 255.0).astype(np.float32)).unsqueeze(0)
         sample["mask"] = mask
         sample["square_category"] = torch.tensor(to_flatten_square_idx(sample)).long()
+        return sample
+
+def acceleration_approx(smaple: np.ndarray, h: float = 1.0, mean: float = 0.00279, std: float = 1.40201):
+    x = smaple[:, 0]
+    y = smaple[:, 1]
+    x_acc = (((x[:-2] - 2 * x[1:-1] + x[2:]) / h ** 2) - mean) / std
+    y_acc = (((y[:-2] - 2 * y[1:-1] + y[2:]) / h ** 2) - mean) / std
+    
+    return np.concatenate([x_acc, y_acc])
+
+class AccelAgentDataset(AgentDataset):
+    def __getitem__(self, index):
+        sample = super().__getitem__(index)
+        sample['xy_acceleration'] = acceleration_approx(sample['history_positions'])
         return sample

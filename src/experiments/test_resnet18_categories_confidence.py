@@ -292,7 +292,7 @@ def experiment(logdir, device) -> None:
         future_num_frames=future_n_frames,
         num_trajectories=n_trajectories,
     )
-    # model = nn.DataParallel(model)
+    model = nn.DataParallel(model)
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = neg_multi_log_likelihood_batch
