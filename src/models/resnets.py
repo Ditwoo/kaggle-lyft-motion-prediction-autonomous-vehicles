@@ -30,11 +30,6 @@ def resnet34(pretrained=False, in_channels=3, num_classes=1000, progress=True):
     model = _adjust_model(model, in_channels, num_classes)
     return model
 
-def resnet34(pretrained=False, in_channels=3, num_classes=1000, progress=True):
-    model = models.resnet34(pretrained=pretrained, progress=progress)
-    model = _adjust_model(model, in_channels, num_classes)
-    return model
-
 
 def resnet50(pretrained=False, in_channels=3, num_classes=1000, progress=True):
     model = models.resnet50(pretrained=pretrained, progress=progress)
@@ -332,3 +327,81 @@ def resnet18_unet(
     model = SegmentationResnet(encoder)
     return model
 
+def resnet34_unet(
+    pretrained=False, in_channels=3, num_classes=1000, progress=True, **kwargs
+):
+    encoder = ResnetCustom(BasicBlock, [3, 4, 6, 3], num_classes=1000, **kwargs)
+    if pretrained:
+        state_dict = load_state_dict_from_url(model_urls["resnet34"], progress=progress)
+        encoder.load_state_dict(state_dict)
+    encoder = _adjust_model(encoder, in_channels, num_classes)
+    model = SegmentationResnet(encoder)
+    return model
+
+
+class AccelResNet(ResNet):
+    def __init__(self, *args, in_accel_features=96, num_accel_features=32, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        self.accel = nn.Sequential(
+            nn.Linear(in_accel_features, num_accel_features),
+            nn.ReLU(True),
+            nn.BatchNorm1d(num_accel_features)
+        )
+        # self.category = Category(num_categories, num_cat_features)
+        self.fc = nn.Linear(
+            self.fc.in_features + num_accel_features, self.fc.out_features
+        )
+
+    def unet_forward(self, x, a):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x1 = self.layer1(x)
+        x2 = self.layer2(x1)
+        x3 = self.layer3(x2)
+        x4 = self.layer4(x3)
+
+        # conv features
+        x = self.avgpool(x4)
+        x = torch.flatten(x, 1)
+        # categorical features
+        a = self.accel(a)
+
+        x = self.fc(torch.cat((x, a), dim=1))
+
+        return x, (x1, x2, x3, x4)
+
+    def forward(self, x, a):
+        # See note [TorchScript super()]
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        # conv features
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        # categorical features
+        a = self.accel(a)
+
+        x = self.fc(torch.cat((x, a), dim=1))
+
+        return x
+    
+
+def resnet34_accel(pretrained=False, in_channels=3, num_classes=1000, 
+                   progress=True, in_accel_features=96, num_accel_features=32):
+    model = AccelResNet(BasicBlock, [3, 4, 6, 3], 
+                        num_classes=num_classes, 
+                        in_accel_features=in_accel_features, 
+                        num_accel_features=num_accel_features)
+    model = _adjust_model(model, in_channels, num_classes)
+    return model

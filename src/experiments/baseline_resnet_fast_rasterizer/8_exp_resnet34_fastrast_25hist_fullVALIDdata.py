@@ -13,9 +13,12 @@ from l5kit.data import LocalDataManager, ChunkedDataset
 from l5kit.dataset import AgentDataset, EgoDataset
 from l5kit.evaluation import create_chopped_dataset
 from l5kit.evaluation.chop_dataset import MIN_FUTURE_STEPS
+
 # from l5kit.rasterization import build_rasterizer
 
-from src.experiments.baseline_resnet_fast_rasterizer.l5kit_modified.rasterizer.build_rasterizer import build_rasterizer
+from src.experiments.baseline_resnet_fast_rasterizer.l5kit_modified.rasterizer.build_rasterizer import (
+    build_rasterizer,
+)
 
 from src.batteries import (
     seed_all,
@@ -25,7 +28,7 @@ from src.batteries import (
     TensorboardLogger,
     make_checkpoint,
     load_checkpoint,
-    save_checkpoint
+    save_checkpoint,
 )
 from src.batteries.progress import tqdm
 from src.models import ModelWithConfidence
@@ -88,7 +91,7 @@ def get_loaders(train_batch_size=32, valid_batch_size=64):
     """
     rasterizer = build_rasterizer(cfg, dm)
 
-    train_zarr = ChunkedDataset(dm.require("scenes/train.zarr")).open()
+    train_zarr = ChunkedDataset(dm.require("scenes/validate.zarr")).open()
     train_dataset = AgentDataset(cfg, train_zarr, rasterizer)
     # n_samples = len(train_dataset) // 5
     # # n_samples = 100
@@ -121,7 +124,7 @@ def get_loaders(train_batch_size=32, valid_batch_size=64):
     # print(f" * Number of elements in valid dataset - {len(valid_dataset)}")
     # print(f" * Number of elements in valid loader - {len(valid_loader)}")
     valid_loader = None
-    
+
     return train_loader, valid_loader
 
 
@@ -180,18 +183,16 @@ def train_fn(
 
             if tensorboard_logger is not None:
                 tensorboard_logger.metric("loss", _loss, idx)
-                
+
             loss.backward()
 
             progress.set_postfix_str(f"loss - {_loss:.5f}")
             progress.update(1)
 
-            
             if (idx + 1) in indices_to_save and logdir is not None:
                 checkpoint = make_checkpoint("train", idx + 1, model)
                 save_checkpoint(checkpoint, logdir, f"train_{idx}.pth")
-                
-                
+
             if (idx + 1) % accumulation_steps == 0:
                 optimizer.step()
                 if scheduler is not None:
@@ -294,6 +295,7 @@ def experiment(logdir, device) -> None:
         future_num_frames=future_n_frames,
         num_trajectories=n_trajectories,
     )
+
     # model = nn.DataParallel(model)
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
@@ -302,7 +304,7 @@ def experiment(logdir, device) -> None:
 
     with TensorboardLogger(tb_dir) as tb:
         stage = "stage_0"
-        n_epochs = 3
+        n_epochs = 1
         print(f"Stage - {stage}")
 
         checkpointer = CheckpointManager(
@@ -313,16 +315,22 @@ def experiment(logdir, device) -> None:
         )
 
         train_loader, valid_loader = get_loaders(
-            train_batch_size=128, 
-            valid_batch_size=128
+            train_batch_size=128, valid_batch_size=128
         )
 
         for epoch in range(1, n_epochs + 1):
             epoch_start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
             print(f"[{epoch_start_time}]\n[Epoch {epoch}/{n_epochs}]")
 
-            train_metrics = train_fn(model, train_loader, device, criterion, 
-                                     optimizer, tensorboard_logger=tb, logdir=logdir / f'{epoch}_epoch')
+            train_metrics = train_fn(
+                model,
+                train_loader,
+                device,
+                criterion,
+                optimizer,
+                tensorboard_logger=tb,
+                logdir=logdir / f"{epoch}_epoch",
+            )
             log_metrics(stage, train_metrics, tb, "train", epoch)
 
             valid_metrics = train_metrics
@@ -346,7 +354,7 @@ def experiment(logdir, device) -> None:
 
 
 def main() -> None:
-    experiment_name = "resnet34_fast_rasterizer_fulldata_confidence_25hist"
+    experiment_name = "resnet34_fast_rasterizer_fullVALIDdata_confidence_25hist"
     logdir = Path(".") / "logs" / experiment_name
 
     if not torch.cuda.is_available():

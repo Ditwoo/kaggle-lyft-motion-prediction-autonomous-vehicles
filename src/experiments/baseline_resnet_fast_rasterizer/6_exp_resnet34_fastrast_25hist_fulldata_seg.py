@@ -1,23 +1,21 @@
 import os
 import time
 import shutil
-from functools import partial
 from pathlib import Path
 import numpy as np
-import pandas as ps
+from functools import partial
+
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Subset, DataLoader, RandomSampler
+import torch.nn.functional as F
 
 from l5kit.data import LocalDataManager, ChunkedDataset
 from l5kit.dataset import AgentDataset, EgoDataset
 from l5kit.evaluation import create_chopped_dataset
 from l5kit.evaluation.chop_dataset import MIN_FUTURE_STEPS
-
-# from l5kit.rasterization import build_rasterizer
 from l5kit.geometry import transform_points
 from l5kit.evaluation import write_pred_csv, compute_metrics_csv
 from l5kit.evaluation.metrics import neg_multi_log_likelihood
@@ -33,20 +31,18 @@ from src.batteries import (
     CheckpointManager,
     TensorboardLogger,
     make_checkpoint,
-    save_checkpoint,
     load_checkpoint,
+    save_checkpoint,
 )
 from src.batteries.progress import tqdm
 from src.models import SegmentationModelWithConfidence
-from src.models.resnets import resnet18_cubic, SegmentationResnet
+from src.models.resnets import resnet18, resnet34_unet
 from src.criterion import neg_multi_log_likelihood_batch
 from src.datasets import SegmentationAgentDataset
-
 
 torch.autograd.set_detect_anomaly(False)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
-torch.multiprocessing.set_sharing_strategy("file_system")
 
 
 DEBUG = int(os.environ.get("DEBUG", -1))
@@ -56,7 +52,7 @@ os.environ["L5KIT_DATA_FOLDER"] = "./data"
 cfg = {
     "format_version": 4,
     "model_params": {
-        "history_num_frames": 20,
+        "history_num_frames": 25,
         "history_step_size": 1,
         "history_delta_time": 0.1,
         "future_num_frames": 50,
@@ -64,7 +60,7 @@ cfg = {
         "future_delta_time": 0.1,
     },
     "raster_params": {
-        "raster_size": [384, 384],
+        "raster_size": [224, 224],
         "pixel_size": [0.5, 0.5],
         "ego_center": [0.25, 0.5],
         "map_type": "py_semantic",
@@ -75,7 +71,7 @@ cfg = {
     },
     "train_data_loader": {
         "key": "scenes/train.zarr",
-        "batch_size": 12,
+        "batch_size": 32,
         "shuffle": True,
         "num_workers": 4,
     },
@@ -102,6 +98,8 @@ def get_loaders(train_batch_size=32, valid_batch_size=64):
 
     train_zarr = ChunkedDataset(dm.require("scenes/train.zarr")).open()
     train_dataset = DATASET_CLASS(cfg, train_zarr, rasterizer)
+    indices = np.arange(22079968, 22496709, 1)
+    train_dataset = Subset(train_dataset, indices)
 
     # sizes = ps.read_csv(os.environ["TRAIN_TRAJ_SIZES"])["size"].values
     # is_small = sizes < 6
@@ -161,8 +159,8 @@ def train_fn(
     accumulation_steps=1,
     verbose=True,
     tensorboard_logger=None,
-    # logdir=None,
-    # validation_fn=None,
+    logdir=None,
+    validation_fn=None,
 ):
     """Train step.
 
@@ -187,16 +185,22 @@ def train_fn(
     n_batches = len(loader)
 
     indices_to_save = [int(n_batches * pcnt) for pcnt in np.arange(0.1, 1, 0.1)]
-    # last_score = 0.0
+    last_score = 0.0
 
     with tqdm(total=len(loader), desc="train", disable=not verbose) as progress:
         for idx, batch in enumerate(loader):
-            (images, targets, target_availabilities, squares, masks) = t2d(
+            (
+                images,
+                targets,
+                target_availabilities,
+                #  squares,
+                masks,
+            ) = t2d(
                 (
                     batch["image"],
                     batch["target_positions"],
                     batch["target_availabilities"],
-                    batch["square_category"],
+                    # batch["square_category"],
                     batch["mask"],
                 ),
                 device,
@@ -204,7 +208,10 @@ def train_fn(
 
             zero_grad(optimizer)
 
-            predictions, confidences, masks_logits = model(images, squares)
+            predictions, confidences, masks_logits = model(
+                images,
+                #    squares
+            )
             rloss = loss_fn(targets, predictions, confidences, target_availabilities)
             mloss = 1e4 * F.binary_cross_entropy_with_logits(masks_logits, masks)
             loss = rloss + mloss
@@ -216,16 +223,16 @@ def train_fn(
             metrics["mask_loss"] += _mloss
             metrics["loss"] += _loss
 
-            # if (idx + 1) % 30_000 == 0 and validation_fn is not None:
-            #     score = validation_fn(model=model, device=device)
-            #     model.train()
-            #     last_score = score
+            if (idx + 1) % 30_000 == 0 and validation_fn is not None:
+                score = validation_fn(model=model, device=device)
+                model.train()
+                last_score = score
 
-            #     if logdir is not None:
-            #         checkpoint = make_checkpoint("train", idx + 1, model)
-            #         save_checkpoint(checkpoint, logdir, f"train_{idx}.pth")
-            # else:
-            #     score = None
+                if logdir is not None:
+                    checkpoint = make_checkpoint("train", idx + 1, model)
+                    save_checkpoint(checkpoint, logdir, f"train_{idx}.pth")
+            else:
+                score = None
 
             if tensorboard_logger is not None:
                 tensorboard_logger.metric("regression_loss", _rloss, idx)
@@ -246,9 +253,9 @@ def train_fn(
             progress.set_postfix_str(
                 f"rloss - {_rloss:.5f}, "
                 f"mloss - {_mloss:.5f}, "
-                f"loss - {_loss:.5f}"
                 # f"loss - {_loss:.5f}"
-                # f"loss - {_loss:.5f}, score - {last_score:.5f}"
+                # f"loss - {_loss:.5f}"
+                f"loss - {_loss:.5f}, score - {last_score:.5f}"
             )
             progress.update(1)
 
@@ -290,9 +297,12 @@ def valid_fn(model, loader, device, ground_truth_file, logdir, verbose=True):
         total=len(loader), desc="valid", disable=not verbose
     ) as progress:
         for idx, batch in enumerate(loader):
-            images, squares = t2d((batch["image"], batch["square_category"],), device,)
+            images = t2d(batch["image"], device)
 
-            predictions, confidences, _ = model(images, squares)
+            predictions, confidences, _ = model(
+                images,
+                # squares
+            )
 
             _gt = batch["target_positions"].cpu().numpy().copy()
             predictions = predictions.cpu().numpy().copy()
@@ -333,7 +343,9 @@ def valid_fn(model, loader, device, ground_truth_file, logdir, verbose=True):
     )
 
     metrics = compute_metrics_csv(
-        ground_truth_file, predictions_file, [neg_multi_log_likelihood],
+        ground_truth_file,
+        predictions_file,
+        [neg_multi_log_likelihood],
     )
 
     return {"score": metrics["neg_multi_log_likelihood"]}
@@ -351,7 +363,7 @@ def log_metrics(
         loader (str): loader name
         epoch (int): epoch number
     """
-    order = ("loss", "score")
+    order = ("loss", "score", "mask_loss", "regression_loss")
     for metric_name in order:
         if metric_name in metrics:
             value = metrics[metric_name]
@@ -367,7 +379,7 @@ def experiment(logdir, device) -> None:
         device (str): device name to use
     """
     tb_dir = logdir / "tensorboard"
-    main_metric = "score"
+    main_metric = "loss"
     minimize_metric = True
 
     seed_all()
@@ -376,17 +388,20 @@ def experiment(logdir, device) -> None:
     future_n_frames = cfg["model_params"]["future_num_frames"]
     n_trajectories = 3
     model = SegmentationModelWithConfidence(
-        backbone=SegmentationResnet(
-            resnet18_cubic(
-                # in_channels=3 + 2 * (history_n_frames + 1),
-                in_channels=3 + 3,
-                num_classes=2 * future_n_frames * n_trajectories + n_trajectories,
-            )
+        backbone=resnet34_unet(
+            pretrained=True,
+            in_channels=3 + 3,
+            num_classes=2 * future_n_frames * n_trajectories + n_trajectories,
         ),
         future_num_frames=future_n_frames,
         num_trajectories=n_trajectories,
     )
-    model = nn.DataParallel(model)
+
+    load_checkpoint(
+        "./logs/resnet34_frast_fulldata_confidence_25hist_seg/epoch_1/train_689999.pth",
+        model,
+    )
+
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = neg_multi_log_likelihood_batch
@@ -408,13 +423,13 @@ def experiment(logdir, device) -> None:
             train_batch_size=32, valid_batch_size=32
         )
 
-        # valid_func = partial(
-        #     valid_fn,
-        #     loader=valid_loader,
-        #     ground_truth_file=valid_gt_path,
-        #     logdir=logdir,
-        #     verbose=True,
-        # )
+        valid_func = partial(
+            valid_fn,
+            loader=valid_loader,
+            ground_truth_file=valid_gt_path,
+            logdir=logdir,
+            verbose=True,
+        )
 
         for epoch in range(1, n_epochs + 1):
             epoch_start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -428,8 +443,8 @@ def experiment(logdir, device) -> None:
                     criterion,
                     optimizer,
                     tensorboard_logger=tb,
-                    # logdir=logdir / f"epoch_{epoch}",
-                    # validation_fn=None,
+                    logdir=logdir / f"epoch_{epoch}",
+                    validation_fn=valid_func,
                 )
                 log_metrics(stage, train_metrics, tb, "train", epoch)
             except BaseException:
@@ -440,7 +455,7 @@ def experiment(logdir, device) -> None:
             log_metrics(stage, valid_metrics, tb, "valid", epoch)
 
             checkpointer.process(
-                metric_value=valid_metrics[main_metric],
+                metric_value=valid_metrics["score"],
                 epoch=epoch,
                 checkpoint=make_checkpoint(
                     stage,
@@ -452,11 +467,11 @@ def experiment(logdir, device) -> None:
                 ),
             )
 
-            # scheduler.step()
+        # TODO: Закинуть submit fn и проверить на сабсете
 
 
 def main() -> None:
-    experiment_name = "resnet18_bi_cub_seg_confidence"
+    experiment_name = "resnet34_frast_fulldata_confidence_25hist_seg_cnt"
     logdir = Path(".") / "logs" / experiment_name
 
     if not torch.cuda.is_available():
@@ -473,3 +488,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# TODO: Validation wont work because of DataParallel
